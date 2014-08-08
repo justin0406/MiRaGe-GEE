@@ -285,6 +285,8 @@
 
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
 
+int sysctl_tcp_autocorking __read_mostly = 1;
+
 struct percpu_counter tcp_orphan_count;
 EXPORT_SYMBOL_GPL(tcp_orphan_count);
 
@@ -366,6 +368,71 @@ static int retrans_to_secs(u8 retrans, int timeout, int rto_max)
 	}
 	return period;
 }
+
+/* Address-family independent initialization for a tcp_sock.
+ *
+ * NOTE: A lot of things set to zero explicitly by call to
+ *       sk_alloc() so need not be done here.
+ */
+void tcp_init_sock(struct sock *sk)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	skb_queue_head_init(&tp->out_of_order_queue);
+	tcp_init_xmit_timers(sk);
+	tcp_prequeue_init(tp);
+	INIT_LIST_HEAD(&tp->tsq_node);
+
+	icsk->icsk_rto = TCP_TIMEOUT_INIT;
+	tp->mdev = TCP_TIMEOUT_INIT;
+
+	/* So many TCP implementations out there (incorrectly) count the
+	 * initial SYN frame in their delayed-ACK and congestion control
+	 * algorithms that we must have the following bandaid to talk
+	 * efficiently to them.  -DaveM
+	 */
+	tp->snd_cwnd = TCP_INIT_CWND;
+
+	/* See draft-stevens-tcpca-spec-01 for discussion of the
+	 * initialization of these values.
+	 */
+	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+	tp->snd_cwnd_clamp = ~0;
+	tp->mss_cache = TCP_MSS_DEFAULT;
+
+	tp->reordering = sysctl_tcp_reordering;
+	icsk->icsk_ca_ops = &tcp_init_congestion_ops;
+
+	sk->sk_state = TCP_CLOSE;
+
+	sk->sk_write_space = sk_stream_write_space;
+	sock_set_flag(sk, SOCK_USE_WRITE_QUEUE);
+
+	icsk->icsk_sync_mss = tcp_sync_mss;
+
+	/* TCP Cookie Transactions */
+	if (sysctl_tcp_cookie_size > 0) {
+		/* Default, cookies without s_data_payload. */
+		tp->cookie_values =
+			kzalloc(sizeof(*tp->cookie_values),
+				sk->sk_allocation);
+		if (tp->cookie_values != NULL)
+			kref_init(&tp->cookie_values->kref);
+	}
+	/* Presumed zeroed, in order of appearance:
+	 *	cookie_in_always, cookie_out_never,
+	 *	s_data_constant, s_data_in, s_data_out
+	 */
+	sk->sk_sndbuf = sysctl_tcp_wmem[1];
+	sk->sk_rcvbuf = sysctl_tcp_rmem[1];
+
+	local_bh_disable();
+	sock_update_memcg(sk);
+	sk_sockets_allocated_inc(sk);
+	local_bh_enable();
+}
+EXPORT_SYMBOL(tcp_init_sock);
 
 /*
  *	Wait for a TCP event.
@@ -558,19 +625,52 @@ static inline void tcp_mark_urg(struct tcp_sock *tp, int flags)
 		tp->snd_up = tp->write_seq;
 }
 
-static inline void tcp_push(struct sock *sk, int flags, int mss_now,
-			    int nonagle)
+/* If a not yet filled skb is pushed, do not send it if
+ * we have packets in Qdisc or NIC queues :
+ * Because TX completion will happen shortly, it gives a chance
+ * to coalesce future sendmsg() payload into this skb, without
+ * need for a timer, and with no latency trade off.
+ * As packets containing data payload have a bigger truesize
+ * than pure acks (dataless) packets, the last check prevents
+ * autocorking if we only have an ACK in Qdisc/NIC queues.
+ */
+static bool tcp_should_autocork(struct sock *sk, struct sk_buff *skb,
+				int size_goal)
 {
-	if (tcp_send_head(sk)) {
-		struct tcp_sock *tp = tcp_sk(sk);
+	return skb->len < size_goal &&
+	       sysctl_tcp_autocorking &&
+	       atomic_read(&sk->sk_wmem_alloc) > skb->truesize;
+}
 
-		if (!(flags & MSG_MORE) || forced_push(tp))
-			tcp_mark_push(tp, tcp_write_queue_tail(sk));
+static void tcp_push(struct sock *sk, int flags, int mss_now,
+		     int nonagle, int size_goal)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct sk_buff *skb;
 
-		tcp_mark_urg(tp, flags);
-		__tcp_push_pending_frames(sk, mss_now,
-					  (flags & MSG_MORE) ? TCP_NAGLE_CORK : nonagle);
+	if (!tcp_send_head(sk))
+		return;
+
+	skb = tcp_write_queue_tail(sk);
+	if (!(flags & MSG_MORE) || forced_push(tp))
+		tcp_mark_push(tp, skb);
+
+	tcp_mark_urg(tp, flags);
+
+	if (tcp_should_autocork(sk, skb, size_goal)) {
+
+		/* avoid atomic op if TSQ_THROTTLED bit is already set */
+		if (!test_bit(TSQ_THROTTLED, &tp->tsq_flags)) {
+			NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPAUTOCORKING);
+			set_bit(TSQ_THROTTLED, &tp->tsq_flags);
+		}
+		return;
 	}
+
+	if (flags & MSG_MORE)
+		nonagle = TCP_NAGLE_CORK;
+
+	__tcp_push_pending_frames(sk, mss_now, nonagle);
 }
 
 static int tcp_splice_data_recv(read_descriptor_t *rd_desc, struct sk_buff *skb,
@@ -733,6 +833,10 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 				  inet_csk(sk)->icsk_ext_hdr_len -
 				  tp->tcp_header_len);
 
+		/* TSQ : try to have two TSO segments in flight */
+		xmit_size_goal = min_t(u32, xmit_size_goal,
+				       sysctl_tcp_limit_output_bytes >> 1);
+
 		xmit_size_goal = tcp_bound_to_half_wnd(tp, xmit_size_goal);
 
 		/* We try hard to avoid divides here */
@@ -855,7 +959,8 @@ new_segment:
 wait_for_sndbuf:
 		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
-		tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
+		tcp_push(sk, flags & ~MSG_MORE, mss_now,
+			 TCP_NAGLE_PUSH, size_goal);
 
 		if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 			goto do_error;
@@ -865,7 +970,7 @@ wait_for_memory:
 
 out:
 	if (copied && !(flags & MSG_SENDPAGE_NOTLAST))
-		tcp_push(sk, flags, mss_now, tp->nonagle);
+		tcp_push(sk, flags, mss_now, tp->nonagle, size_goal);
 	return copied;
 
 do_error:
@@ -1106,7 +1211,8 @@ wait_for_sndbuf:
 			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
 			if (copied)
-				tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
+				tcp_push(sk, flags & ~MSG_MORE, mss_now,
+					 TCP_NAGLE_PUSH, size_goal);
 
 			if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 				goto do_error;
@@ -1117,7 +1223,7 @@ wait_for_memory:
 
 out:
 	if (copied)
-		tcp_push(sk, flags, mss_now, tp->nonagle);
+		tcp_push(sk, flags, mss_now, tp->nonagle, size_goal);
 	release_sock(sk);
 
 	if (copied > 0)
@@ -3361,6 +3467,7 @@ void __init tcp_init(void)
 	tcp_secret_primary = &tcp_secret_one;
 	tcp_secret_retiring = &tcp_secret_two;
 	tcp_secret_secondary = &tcp_secret_two;
+	tcp_tasklet_init();
 }
 
 static int tcp_is_local(struct net *net, __be32 addr) {

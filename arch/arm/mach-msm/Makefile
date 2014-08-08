@@ -305,7 +305,6 @@ obj-$(CONFIG_TROUT_BATTCHG) += htc_battery.o
 
 obj-$(CONFIG_HTC_PWRSINK) += htc_pwrsink.o
 obj-$(CONFIG_HTC_HEADSET) += htc_headset.o
-obj-$(CONFIG_MSM_RMT_STORAGE_CLIENT) += rmt_storage_client.o
 obj-$(CONFIG_MSM_RPM) += rpm.o
 ifdef CONFIG_MSM_RPM
 	obj-$(CONFIG_ARCH_APQ8064) += rpm_resources.o
@@ -347,8 +346,7 @@ obj-$(CONFIG_ARCH_MSM9625) += gpiomux-v2.o gpiomux.o
 
 
 obj-$(CONFIG_MSM_SLEEP_STATS_DEVICE) += idle_stats_device.o
-obj-$(CONFIG_MSM_DCVS) += msm_dcvs_scm.o msm_dcvs.o msm_mpdecision.o
-obj-$(CONFIG_MSM_RUN_QUEUE_STATS) += msm_rq_stats.o
+obj-$(CONFIG_MSM_DCVS) += msm_dcvs_scm.o msm_dcvs.o
 obj-$(CONFIG_MSM_SHOW_RESUME_IRQ) += msm_show_resume_irq.o
 obj-$(CONFIG_BT_MSM_PINTEST)  += btpintest.o
 obj-$(CONFIG_MSM_FAKE_BATTERY) += fish_battery.o

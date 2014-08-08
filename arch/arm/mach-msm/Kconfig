@@ -1506,22 +1506,6 @@ config MSM_RPCSERVER_HANDSET
 	  Support for receiving handset events like headset detect,
 	  headset switch and clamshell state.
 
-config MSM_RMT_STORAGE_CLIENT
-	depends on (ARCH_MSM && MSM_ONCRPCROUTER)
-	default n
-	bool "Remote Storage RPC client"
-	help
-	  Provide RPC mechanism for remote processors to access storage
-	  device on apps processor.
-
-config MSM_RMT_STORAGE_CLIENT_STATS
-	depends on (MSM_RMT_STORAGE_CLIENT && DEBUG_FS)
-	default n
-	bool "Remote storage RPC client performance statistics"
-	help
-	  Collects performance statistics and shows this information
-	  through a debugfs file rmt_storage_stats.
-
 config MSM_DALRPC
 	bool "DAL RPC support"
 	default n
@@ -2148,14 +2132,6 @@ config MSM_ETM
 
 config MSM_SLEEP_STATS_DEVICE
 	bool "Enable exporting of MSM sleep device stats to userspace"
-
-config MSM_RUN_QUEUE_STATS
-	bool "Enable collection and exporting of MSM Run Queue stats to userspace"
-	depends on (MSM_SOC_REV_A || ARCH_MSM8X60 || ARCH_MSM8960)
-	help
-	 This option enalbes statistics collection on Run Queue. A daemon
-         in user mode, called MPDecision will be using this data to decide
-         on when to switch off/on the other cores.
 
 config MSM_STANDALONE_POWER_COLLAPSE
        bool "Enable standalone power collapse"

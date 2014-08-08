@@ -74,6 +74,13 @@ struct cpu_dbs_common_info {
 	u64 prev_cpu_idle;
 	u64 prev_cpu_wall;
 	u64 prev_cpu_nice;
+	/*
+	 * Used to keep track of load in the previous interval. However, when
+	 * explicitly set to zero, it is used as a flag to ensure that we copy
+	 * the previous load to the current interval only once, upon the first
+	 * wake-up from idle.
+	 */
+	unsigned int prev_load;
 	struct cpufreq_policy *cur_policy;
 	struct delayed_work work;
 	/*
@@ -109,7 +116,6 @@ struct od_dbs_tuners {
 	unsigned int sampling_rate;
 	unsigned int sampling_down_factor;
 	unsigned int up_threshold;
-	unsigned int down_differential;
 	unsigned int powersave_bias;
 	unsigned int io_is_busy;
 };
@@ -172,7 +178,8 @@ static inline int delay_for_sampling_rate(unsigned int sampling_rate)
 
 u64 get_cpu_idle_time(unsigned int cpu, u64 *wall);
 void dbs_check_cpu(struct dbs_data *dbs_data, int cpu);
-bool dbs_sw_coordinated_cpus(struct cpu_dbs_common_info *cdbs);
+bool need_load_eval(struct cpu_dbs_common_info *cdbs,
+		unsigned int sampling_rate);
 int cpufreq_governor_dbs(struct dbs_data *dbs_data,
 		struct cpufreq_policy *policy, unsigned int event);
 #endif /* _CPUFREQ_GOVERNER_H */
