@@ -15,7 +15,7 @@ DEFCONFIG="gee_defconfig"
 
 # Kernel Details
 BASE_AK_VER="MiRaGe"
-VER=".020515.gee"
+VER=".0220.gee"
 AK_VER="$BASE_AK_VER$VER"
 
 # AK Variables
